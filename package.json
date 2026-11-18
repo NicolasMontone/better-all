@@ -3,6 +3,7 @@
   "version": "0.0.7",
   "description": "Better Promise.all with automatic dependency optimization",
   "type": "module",
+  "sideEffects": false,
   "main": "./dist/es/index.js",
   "module": "./dist/es/index.js",
   "types": "./dist/es/index.d.ts",
