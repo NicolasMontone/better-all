@@ -457,6 +457,8 @@ function executeTasksInternal<T extends Record<string, any>>(
 }
 
 /**
+ * Run the given task functions in parallel, resolving `this.$.x` dependencies automatically and rejecting if any task fails.
+ *
  * Execute tasks with automatic dependency resolution.
  *
  * @example
@@ -508,6 +510,8 @@ export function all<T extends Record<string, any>>(
 }
 
 /**
+ * Like `all`, but resolves with settled (fulfilled/rejected) results for every task and never rejects.
+ *
  * Execute tasks with automatic dependency resolution, returning settled results for all tasks.
  * Unlike `all`, this will never reject - failed tasks will be included in the result with their error.
  *
@@ -580,6 +584,8 @@ type FlowTaskContext<
 }
 
 /**
+ * Run tasks in parallel with automatic dependency resolution and early exit via `this.$end(value)`, resolving to the first value passed to `$end`.
+ *
  * Execute tasks with automatic dependency resolution and support for early exit.
  * The first task to call `this.$end(value)` determines the return value.
  *
