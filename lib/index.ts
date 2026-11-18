@@ -1,3 +1,4 @@
+/// <reference lib="es2022.object" />
 /**
  * Promise.all with automatic dependency optimization and full type inference
  *
@@ -179,30 +180,55 @@ function executeTasksInternal<T extends Record<string, any>>(
   const taskNames = Object.keys(tasks) as (keyof T)[]
   const results = new Map<keyof T, any>()
   const errors = new Map<keyof T, any>()
-  const resolvers = new Map<
+  // Memoized pending dependency promises: a single promise per not-yet-settled
+  // dependency, shared by every task that awaits it.
+  const pendingPromises = new Map<keyof T, Promise<any>>()
+  const pendingResolvers = new Map<
     keyof T,
-    [(value: any) => void, (reason?: any) => void][]
+    { resolve: (value: any) => void; reject: (reason?: any) => void }
   >()
   const returnValue: Record<string, any> = {}
 
   // Flow mode tracking
   let flowEnded = false
+  let flowSettled = false
   let flowEndValue: any = undefined
+  let settleFlow!: (value: any) => void
+  let rejectFlow!: (reason?: any) => void
+  const flowDeferred = options.flowMode
+    ? new Promise<any>((resolve, reject) => {
+        settleFlow = resolve
+        rejectFlow = reject
+      })
+    : undefined
 
   // Create internal abort controller for auto-abort on failure and external signal propagation
   const internalController = new AbortController()
 
-  // Controller to manage cleanup of the external signal listener
-  const cleanupController = new AbortController()
+  // Controller to manage cleanup of the external signal listener. It is only
+  // created when an external signal is provided, so the common case allocates
+  // nothing extra.
+  let cleanupController: AbortController | undefined
 
   // If external signal is provided, propagate its abort to internal controller
   if (options.signal) {
+    cleanupController = new AbortController()
     if (options.signal.aborted) {
       internalController.abort(options.signal.reason)
+      if (options.flowMode) {
+        flowSettled = true
+        rejectFlow(options.signal.reason ?? new Error('Aborted'))
+      }
     } else {
       options.signal.addEventListener(
         'abort',
-        () => internalController.abort(options.signal!.reason),
+        () => {
+          internalController.abort(options.signal!.reason)
+          if (options.flowMode && !flowSettled) {
+            flowSettled = true
+            rejectFlow(options.signal!.reason ?? new Error('Aborted'))
+          }
+        },
         { once: true, signal: cleanupController.signal },
       )
     }
@@ -218,7 +244,10 @@ function executeTasksInternal<T extends Record<string, any>>(
   >()
 
   const waitForDep = (taskName: keyof T, depName: keyof T): Promise<any> => {
-    if (!(depName in tasks)) {
+    // `in` also matches inherited keys (`constructor`, `hasOwnProperty`, ...),
+    // which would create a resolver that never settles. Only own task keys are
+    // valid dependencies.
+    if (!Object.hasOwn(tasks, depName)) {
       return Promise.reject(new Error(`Unknown task "${String(depName)}"`))
     }
 
@@ -242,12 +271,16 @@ function executeTasksInternal<T extends Record<string, any>>(
     } else if (errors.has(depName)) {
       basePromise = Promise.reject(errors.get(depName))
     } else {
-      basePromise = new Promise((resolve, reject) => {
-        if (!resolvers.has(depName)) {
-          resolvers.set(depName, [])
-        }
-        resolvers.get(depName)!.push([resolve, reject])
-      })
+      // Reuse a single pending promise per dependency, creating it lazily on
+      // first access.
+      let pending = pendingPromises.get(depName)
+      if (!pending) {
+        pending = new Promise((resolve, reject) => {
+          pendingResolvers.set(depName, { resolve, reject })
+        })
+        pendingPromises.set(depName, pending)
+      }
+      basePromise = pending
     }
 
     // Wrap promise to track wait time in debug mode
@@ -287,10 +320,11 @@ function executeTasksInternal<T extends Record<string, any>>(
     } else if (!options.flowMode) {
       returnValue[name as string] = value
     }
-    if (resolvers.has(name)) {
-      for (const [resolve] of resolvers.get(name)!) {
-        resolve(value)
-      }
+    const pending = pendingResolvers.get(name)
+    if (pending) {
+      pendingResolvers.delete(name)
+      pendingPromises.delete(name)
+      pending.resolve(value)
     }
   }
 
@@ -299,10 +333,15 @@ function executeTasksInternal<T extends Record<string, any>>(
     if (handleSettled) {
       returnValue[name as string] = { status: 'rejected', reason: err }
     }
-    if (resolvers.has(name)) {
-      for (const [, reject] of resolvers.get(name)!) {
-        reject(err)
-      }
+    const pending = pendingResolvers.get(name)
+    if (pending) {
+      pendingResolvers.delete(name)
+      pendingPromises.delete(name)
+      pending.reject(err)
+    }
+    if (options.flowMode && !flowSettled) {
+      flowSettled = true
+      rejectFlow(err)
     }
   }
 
@@ -319,12 +358,9 @@ function executeTasksInternal<T extends Record<string, any>>(
         taskStartTimes.set(name, performance.now())
       }
 
-      // Create a unique dep proxy for each task to track dependencies
-      const depProxy = new Proxy({} as DepProxy<T>, {
-        get(_, depName: string) {
-          return waitForDep(name, depName as keyof T)
-        },
-      })
+      // The dep proxy is created lazily (and memoized) so tasks that never read
+      // `this.$` don't allocate one.
+      let depProxy: DepProxy<T> | undefined
 
       // Create $end function for flow mode
       const $end = options.flowMode
@@ -332,15 +368,35 @@ function executeTasksInternal<T extends Record<string, any>>(
             if (!flowEnded) {
               flowEnded = true
               flowEndValue = value
+              // Let siblings observe `this.$signal.aborted` and cancel work.
+              internalController.abort()
+              if (!flowSettled) {
+                flowSettled = true
+                settleFlow(value)
+              }
             }
             throw new FlowEndError(value)
           }
         : undefined
 
       const context: any = {
-        $: depProxy,
         $signal: internalController.signal,
       }
+
+      Object.defineProperty(context, '$', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          if (!depProxy) {
+            depProxy = new Proxy({} as DepProxy<T>, {
+              get(_, depName: string) {
+                return waitForDep(name, depName as keyof T)
+              },
+            })
+          }
+          return depProxy
+        },
+      })
 
       if (options.flowMode && $end) {
         context.$end = $end
@@ -401,47 +457,42 @@ function executeTasksInternal<T extends Record<string, any>>(
     }
   })
 
-  const finalPromise = options.flowMode
-    ? // For flow mode, use allSettled and handle flow end
-      Promise.allSettled(promises).then((results) => {
-        cleanupController.abort()
+  let resultPromise: Promise<any>
 
-        // Check if external signal was aborted
-        if (options.signal?.aborted) {
-          throw options.signal.reason || new Error('Aborted')
-        }
+  if (options.flowMode) {
+    // In flow mode the result settles as soon as it is determined (first
+    // `$end()` or first real error), so a task that fails afterwards must not
+    // surface as an unhandled rejection.
+    for (const promise of promises) {
+      promise.catch(() => {})
+    }
 
-        // Check if any task had a real error
-        for (const result of results) {
-          if (result.status === 'rejected') {
-            throw result.reason
-          }
-        }
+    // Fallback: if nothing settled the flow, resolve once all tasks are done.
+    Promise.allSettled(promises).then(() => {
+      cleanupController?.abort()
+      if (!flowSettled) {
+        flowSettled = true
+        settleFlow(flowEnded ? flowEndValue : undefined)
+      }
+    })
 
-        // If flow ended early, return that value
-        if (flowEnded) {
-          return flowEndValue
-        }
-
-        // No task called $end() - return undefined
-        return undefined
-      })
-    : handleSettled
+    resultPromise = flowDeferred!
+  } else {
+    const finalPromise = handleSettled
       ? // For allSettled, wait for all promises to settle (never rejects)
         Promise.allSettled(promises).then(() => returnValue)
       : // For all, reject on first error (like Promise.all)
         Promise.all(promises).then(() => returnValue)
 
-  // Cleanup external signal listener when tasks complete
-  const withCleanup = options.flowMode
-    ? finalPromise
-    : finalPromise.finally(() => {
-        cleanupController.abort()
-      })
+    // Cleanup external signal listener when tasks complete
+    resultPromise = cleanupController
+      ? finalPromise.finally(() => cleanupController!.abort())
+      : finalPromise
+  }
 
   // Output waterfall chart in debug mode
   if (options.debug) {
-    return withCleanup.then(
+    return resultPromise.then(
       (result) => {
         console.log(generateWaterfallChart(timings))
         return result
@@ -453,7 +504,7 @@ function executeTasksInternal<T extends Record<string, any>>(
     )
   }
 
-  return withCleanup
+  return resultPromise
 }
 
 /**
