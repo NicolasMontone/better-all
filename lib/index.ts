@@ -183,6 +183,10 @@ function executeTasksInternal<T extends Record<string, any>>(
     keyof T,
     [(value: any) => void, (reason?: any) => void][]
   >()
+  // Cache one promise per dependency so that repeated `this.$.<name>` accesses
+  // (within a task or across many tasks) share a single pending promise instead
+  // of allocating a new one for every access.
+  const depPromises = new Map<keyof T, Promise<any>>()
   const returnValue: Record<string, any> = {}
 
   // Flow mode tracking
@@ -235,19 +239,19 @@ function executeTasksInternal<T extends Record<string, any>>(
       taskDependencies.get(taskName)!.add(String(depName))
     }
 
-    let basePromise: Promise<any>
+    let basePromise = depPromises.get(depName)
 
-    if (results.has(depName)) {
-      basePromise = Promise.resolve(results.get(depName))
-    } else if (errors.has(depName)) {
-      basePromise = Promise.reject(errors.get(depName))
-    } else {
-      basePromise = new Promise((resolve, reject) => {
-        if (!resolvers.has(depName)) {
-          resolvers.set(depName, [])
-        }
-        resolvers.get(depName)!.push([resolve, reject])
-      })
+    if (!basePromise) {
+      if (results.has(depName)) {
+        basePromise = Promise.resolve(results.get(depName))
+      } else if (errors.has(depName)) {
+        basePromise = Promise.reject(errors.get(depName))
+      } else {
+        basePromise = new Promise((resolve, reject) => {
+          resolvers.set(depName, [[resolve, reject]])
+        })
+      }
+      depPromises.set(depName, basePromise)
     }
 
     // Wrap promise to track wait time in debug mode
