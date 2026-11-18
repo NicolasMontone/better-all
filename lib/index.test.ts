@@ -212,6 +212,35 @@ describe('all', () => {
       expect(callCounts).toEqual({ a: 1, b: 1 })
     })
 
+    it('should share a single pending dependency promise across awaits and tasks', async () => {
+      let depRuns = 0
+
+      const result = await all({
+        async dep() {
+          depRuns++
+          await sleep(10)
+          return 7
+        },
+        async fiveAwaits() {
+          return Promise.all([
+            this.$.dep,
+            this.$.dep,
+            this.$.dep,
+            this.$.dep,
+            this.$.dep,
+          ])
+        },
+        async otherTask() {
+          return (await this.$.dep) + 1
+        },
+      })
+
+      expect(depRuns).toBe(1)
+      expect(result.dep).toBe(7)
+      expect(result.fiveAwaits).toEqual([7, 7, 7, 7, 7])
+      expect(result.otherTask).toBe(8)
+    })
+
     it('should handle complex dependency graph', async () => {
       const result = await all({
         async a() {
@@ -288,6 +317,17 @@ describe('all', () => {
         }),
       ).rejects.toThrow('Unknown task "unknownTask"')
     })
+
+    it('should reject inherited property names as unknown tasks instead of hanging', async () => {
+      await expect(
+        all({
+          async a() {
+            await (this.$ as any).hasOwnProperty
+            return 1
+          },
+        }),
+      ).rejects.toThrow('Unknown task "hasOwnProperty"')
+    }, 2000)
 
     it('should handle errors in multiple tasks', async () => {
       await expect(
@@ -1756,6 +1796,28 @@ describe('Abort signal', () => {
       expect(states).toContain('a-end')
       expect(states).toContain('b-end')
     })
+
+    it('should reject with the first failure and abort the other tasks', async () => {
+      const abortEvents: string[] = []
+
+      await expect(
+        all({
+          async failing() {
+            throw new Error('first failure')
+          },
+          async other() {
+            this.$signal.addEventListener('abort', () => {
+              abortEvents.push('other-aborted')
+            })
+            await sleep(50)
+            return 'done'
+          },
+        }),
+      ).rejects.toThrow('first failure')
+
+      await sleep(10)
+      expect(abortEvents).toContain('other-aborted')
+    })
   })
 
   describe('allSettled() with $signal', () => {
@@ -2060,6 +2122,57 @@ describe('flow', () => {
       expect(executionOrder).toContain('fast-start')
       expect(executionOrder).toContain('slow-start')
       expect(executionOrder).toContain('fast-end')
+    })
+
+    it('should resolve as soon as $end() is called and abort siblings', async () => {
+      let siblingAborted = false
+      const start = performance.now()
+
+      const f = await flow<number>({
+        async slow() {
+          this.$signal.addEventListener('abort', () => {
+            siblingAborted = true
+          })
+          await sleep(200)
+          return 1
+        },
+        async fast() {
+          this.$end(42)
+        },
+      })
+
+      const duration = performance.now() - start
+      expect(f).toBe(42)
+      expect(duration).toBeLessThan(200)
+      expect(siblingAborted).toBe(true)
+    })
+
+    it('should not reject or emit unhandled rejection when a task throws after $end()', async () => {
+      const unhandled: unknown[] = []
+      const handler = (reason: unknown) => {
+        unhandled.push(reason)
+      }
+      process.on('unhandledRejection', handler)
+
+      try {
+        const f = await flow<number>({
+          async fast() {
+            this.$end(42)
+          },
+          async slow() {
+            await sleep(20)
+            throw new Error('late failure')
+          },
+        })
+
+        expect(f).toBe(42)
+
+        // Give the late failure time to surface if it were unhandled.
+        await sleep(50)
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', handler)
+      }
     })
   })
 

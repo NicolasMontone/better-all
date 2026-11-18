@@ -423,8 +423,10 @@ Execute tasks with automatic dependency resolution, but allow any task to end th
 **Key behaviors:**
 - All tasks start together in parallel (same as `all()`)
 - First task to call `this.$end(value)` determines the return value
+- The flow promise resolves as soon as `$end()` is called - it does not wait for sibling tasks to finish
+- Calling `$end()` aborts `this.$signal` for sibling tasks, so they can check `this.$signal.aborted` and cancel their work
 - After `$end()` is called, other tasks that try to access dependencies will receive errors (caught silently)
-- Real errors (not from `$end`) still propagate to the caller
+- Real errors (anything that is not a `$end()` early exit) that occur before `$end()` still reject the flow
 - Integrates with `this.$signal` for resource cleanup
 
 ### Early Exit from Cache
@@ -520,6 +522,9 @@ const result = await flow<string | undefined>({
 - The type parameter `<R>` is **required** and specifies what type `$end()` accepts
 - If you want to call `$end(undefined)`, you must explicitly include `undefined` in `R` (e.g., `flow<undefined>` or `flow<string | undefined>`)
 - If no task calls `this.$end()`, the flow will return `undefined`
+- The flow promise resolves immediately when `$end()` is called; it does not wait for the remaining tasks
+- `$end()` aborts `this.$signal` for all sibling tasks so they can cancel in-flight work
+- Real errors that happen before `$end()` still reject the flow; errors that happen after `$end()` are ignored
 - Once `$end()` is called, subsequent dependency accesses will fail (but are caught silently)
 - `$end()` stops the current task execution (throws internally)
 
