@@ -457,7 +457,11 @@ function executeTasksInternal<T extends Record<string, any>>(
 }
 
 /**
- * Execute tasks with automatic dependency resolution.
+ * Execute all tasks in parallel with automatic dependency resolution.
+ *
+ * @param tasks - Object of task functions; each task can await siblings via `this.$`.
+ * @param options - Optional execution options (`debug`, `signal`).
+ * @returns A promise resolving to every task result, keyed by task name.
  *
  * @example
  * const { a, b, c } = await all({
@@ -508,8 +512,11 @@ export function all<T extends Record<string, any>>(
 }
 
 /**
- * Execute tasks with automatic dependency resolution, returning settled results for all tasks.
- * Unlike `all`, this will never reject - failed tasks will be included in the result with their error.
+ * Like all(), but never rejects: every task resolves to a { status, value|reason } settled result.
+ *
+ * @param tasks - Object of task functions; each task can await siblings via `this.$`.
+ * @param options - Optional execution options (`debug`, `signal`).
+ * @returns A promise resolving to settled results, keyed by task name.
  *
  * @example
  * const { a, b, c } = await allSettled({
@@ -580,8 +587,11 @@ type FlowTaskContext<
 }
 
 /**
- * Execute tasks with automatic dependency resolution and support for early exit.
- * The first task to call `this.$end(value)` determines the return value.
+ * Execute tasks with automatic dependency resolution and early exit via this.$end(value).
+ *
+ * @param tasks - Object of task functions; each task can call `this.$end(value)` to finish early.
+ * @param options - Optional execution options (`debug`, `signal`).
+ * @returns A promise resolving to the value passed to the first `this.$end()`, or `undefined` if none.
  *
  * @example
  * // Early exit from first task
