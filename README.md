@@ -306,6 +306,14 @@ This makes it easy to:
 - Understand the dependency chain and blocking relationships
 - Spot opportunities for optimization (e.g., tasks with long wait times)
 
+## Performance notes
+
+- **Single pass, no graph pre-analysis.** All task functions are invoked immediately, in one synchronous pass. A task only consumes the dependencies it actually awaits through `this.$`, so there is no dependency scan, graph pre-analysis, or topological sort before execution.
+- **Each task runs exactly once.** However many other tasks await `this.$.<name>`, the task function for `<name>` is invoked exactly once. Every wait resolves from the same stored result, and awaiting the same `this.$.<name>` repeatedly is safe: it waits again but does not re-run the task.
+- **Dependency lookup.** A dependency name that has no matching task rejects with `Unknown task "<name>"`. The check is `depName in tasks`, which also matches inherited properties: accessing a name such as `toString` without defining a task for it counts as a valid dependency that never settles, so avoid such keys.
+- **`this.$signal`.** Every task receives `this.$signal`, an `AbortSignal`. In `all()`, it is aborted as soon as any sibling task fails; in `allSettled()`, task failures never abort it. An external `signal` option aborts it in both cases.
+- **Parallelism is free.** Independent tasks run in parallel, and awaiting a dependency costs no extra work — it just waits for a task that is already running (or for its stored result).
+
 ## Error Handling
 
 ### With `all()`
@@ -526,9 +534,10 @@ const result = await flow<string | undefined>({
 ## Development
 
 ```bash
-pnpm install     # Install dependencies
-pnpm test        # Run tests
-pnpm build       # Build
+pnpm install         # Install dependencies
+pnpm test            # Run tests
+pnpm test:coverage   # Run tests and print a coverage report
+pnpm build           # Build
 ```
 
 ## Author
