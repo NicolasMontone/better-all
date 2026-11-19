@@ -457,7 +457,12 @@ function executeTasksInternal<T extends Record<string, any>>(
 }
 
 /**
- * Execute tasks with automatic dependency resolution.
+ * Runs tasks in parallel with automatic dependency resolution through `this.$`.
+ * Aborts sibling tasks on the first failure and rejects with the first error.
+ *
+ * @param tasks - An object of task functions; each task may await other tasks via `this.$`.
+ * @param options - Optional execution options, such as `debug` and an external `signal`.
+ * @returns A promise resolving to an object with the same keys as `tasks` and their resolved values.
  *
  * @example
  * const { a, b, c } = await all({
@@ -508,8 +513,12 @@ export function all<T extends Record<string, any>>(
 }
 
 /**
- * Execute tasks with automatic dependency resolution, returning settled results for all tasks.
- * Unlike `all`, this will never reject - failed tasks will be included in the result with their error.
+ * Runs tasks in parallel with automatic dependency resolution through `this.$`, like `all`, but never rejects.
+ * Each task is reported as `{ status: 'fulfilled', value }` or `{ status: 'rejected', reason }`.
+ *
+ * @param tasks - An object of task functions; each task may await other tasks via `this.$`.
+ * @param options - Optional execution options, such as `debug` and an external `signal`.
+ * @returns A promise resolving to an object with the same keys as `tasks` and a settled result per task.
  *
  * @example
  * const { a, b, c } = await allSettled({
@@ -580,8 +589,12 @@ type FlowTaskContext<
 }
 
 /**
- * Execute tasks with automatic dependency resolution and support for early exit.
- * The first task to call `this.$end(value)` determines the return value.
+ * Runs tasks in parallel with automatic dependency resolution through `this.$`, like `all`, but supports early exit.
+ * The first task to call `this.$end(value)` determines the resolved value, which may be `undefined`.
+ *
+ * @param tasks - An object of task functions; each task may await other tasks via `this.$` or end the flow with `this.$end`.
+ * @param options - Optional execution options, such as `debug` and an external `signal`.
+ * @returns A promise resolving to the value passed to the first `this.$end()` call, or `undefined`.
  *
  * @example
  * // Early exit from first task
