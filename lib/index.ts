@@ -457,7 +457,7 @@ function executeTasksInternal<T extends Record<string, any>>(
 }
 
 /**
- * Execute tasks with automatic dependency resolution.
+ * Run all tasks in parallel, resolving dependencies declared via `this.$`, rejecting on the first failure like `Promise.all`.
  *
  * @example
  * const { a, b, c } = await all({
@@ -508,8 +508,7 @@ export function all<T extends Record<string, any>>(
 }
 
 /**
- * Execute tasks with automatic dependency resolution, returning settled results for all tasks.
- * Unlike `all`, this will never reject - failed tasks will be included in the result with their error.
+ * Behave like `all`, but never reject and return `{ status, value | reason }` for every task.
  *
  * @example
  * const { a, b, c } = await allSettled({
@@ -580,8 +579,7 @@ type FlowTaskContext<
 }
 
 /**
- * Execute tasks with automatic dependency resolution and support for early exit.
- * The first task to call `this.$end(value)` determines the return value.
+ * Run tasks in parallel and return the value passed to the first `this.$end(value)` call, or `undefined` if no task ends the flow.
  *
  * @example
  * // Early exit from first task
